@@ -105,6 +105,14 @@ def register_routes():
     app.include_router(reports.router)
     app.include_router(notifications.router)
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        from fastapi.responses import Response
+        p = Path(__file__).parent / "app" / "static" / "favicon.svg"
+        if p.exists():
+            return Response(content=p.read_bytes(), media_type="image/svg+xml")
+        return Response(status_code=204)
+
 
 def mount_static():
     static_dir = Path(__file__).parent / "app" / "static"
