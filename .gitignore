@@ -14,6 +14,9 @@ scripts/demo-repo/.git/
 # ============ 前端库临时下载目录（中间产物） ============
 scripts/vendor_tmp/
 
+# ============ 冒烟输出（运行脚本产生的记录文件） ============
+scripts/smoke_out.txt
+
 # ============ 服务器输出日志 ============
 server_out.log
 server_err.log
