@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>自动化测试平台</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/vendor/element-plus.css" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ============ 登录视图 ============ -->
+    <div v-if="!logged" class="login-wrap">
+      <div class="login-card">
+        <h1 class="login-title">自动化测试平台</h1>
+        <p class="login-sub">GitHub 任务化执行 · AI Bug 分析 · 人工反馈闭环</p>
+        <el-form :model="loginForm" label-width="0" @keyup.enter="doLogin">
+          <el-form-item>
+            <el-input v-model="loginForm.username" placeholder="用户名" size="large" clearable />
+          </el-form-item>
+          <el-form-item>
+            <el-input v-model="loginForm.password" type="password" placeholder="密码" size="large" show-password />
+          </el-form-item>
+          <el-button type="primary" size="large" style="width:100%" :loading="loginLoading" @click="doLogin">
+            登 录
+          </el-button>
+        </el-form>
+        <div class="login-tip">默认账号 admin / admin123（可在 .env 中修改）</div>
+      </div>
+    </div>
+
+    <!-- ============ 主布局 ============ -->
+    <el-container v-else class="main-layout">
+      <el-aside width="220px" class="side">
+        <div class="brand">自动化测试平台</div>
+        <el-menu :default-active="view" class="side-menu" @select="onMenuSelect">
+          <el-menu-item index="dashboard"><span class="menu-ico">◧</span><span>仪表盘</span></el-menu-item>
+          <el-sub-menu index="exec-group">
+            <template #title><span class="menu-ico">▤</span><span>执行域</span></template>
+            <el-menu-item index="tasks">任务管理</el-menu-item>
+            <el-menu-item index="runs">执行记录</el-menu-item>
+            <el-menu-item index="reports">报告中心</el-menu-item>
+          </el-sub-menu>
+          <el-sub-menu index="ai-group">
+            <template #title><span class="menu-ico">◈</span><span>智能域</span></template>
+            <el-menu-item index="feedback">AI 反馈中心
+              <el-badge v-if="pendingReview>0" :value="pendingReview" class="menu-badge" />
+            </el-menu-item>
+          </el-sub-menu>
+          <el-sub-menu index="res-group">
+            <template #title><span class="menu-ico">☷</span><span>资源域</span></template>
+            <el-menu-item index="agents">节点管理</el-menu-item>
+            <el-menu-item index="resources">真机池 / 环境</el-menu-item>
+            <el-menu-item index="cases">用例库</el-menu-item>
+          </el-sub-menu>
+          <el-sub-menu v-if="isAdmin" index="mng-group">
+            <template #title><span class="menu-ico">⚙</span><span>管理域</span></template>
+            <el-menu-item index="users">用户管理</el-menu-item>
+            <el-menu-item index="settings">系统设置</el-menu-item>
+            <el-menu-item index="notifications">通知中心
+              <el-badge v-if="unreadNotify>0" :value="unreadNotify" class="menu-badge" />
+            </el-menu-item>
+          </el-sub-menu>
+        </el-menu>
+      </el-aside>
+
+      <el-container>
+        <el-header class="topbar">
+          <div class="topbar-title">{{ viewTitle }}</div>
+          <div style="display:flex;align-items:center">
+            <el-badge v-if="unreadNotify>0" :value="unreadNotify" :max="99" style="margin-right:16px">
+              <el-button size="small" circle @click="goNotifications" title="通知中心">🔔</el-button>
+            </el-badge>
+            <el-badge v-else style="margin-right:16px">
+              <el-button size="small" circle @click="goNotifications" title="通知中心">🔔</el-button>
+            </el-badge>
+            <el-dropdown @command="onUserCommand">
+              <span class="user-chip">
+                <span style="font-weight:600">{{ user.username }}</span>
+                <el-tag size="small" :type="isAdmin?'danger':'info'" style="margin-left:6px">{{ user.role }}</el-tag>
+                <span style="font-size:10px">▾</span>
+              </span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+        </el-header>
+
+        <el-main class="main">
+          <!-- 各视图 -->
+          <dashboard-view v-if="view==='dashboard'"></dashboard-view>
+          <tasks-view v-if="view==='tasks'" @go-run="goToRun"></tasks-view>
+          <runs-view v-if="view==='runs'" :focus-run-id="focusRunId" @clear-focus="clearFocus"></runs-view>
+          <feedback-view v-if="view==='feedback'"></feedback-view>
+          <reports-view v-if="view==='reports'" @go-run="goToRun"></reports-view>
+          <agents-view v-if="view==='agents'"></agents-view>
+          <resources-view v-if="view==='resources'"></resources-view>
+          <cases-view v-if="view==='cases'" @go-run="goToRun"></cases-view>
+          <notifications-view v-if="view==='notifications'"></notifications-view>
+          <users-view v-if="view==='users'"></users-view>
+          <settings-view v-if="view==='settings'"></settings-view>
+        </el-main>
+      </el-container>
+    </el-container>
+  </div>
+
+  <!-- ============ 各视图模板 ============ -->
+  <script type="text/x-template" id="tpl-dashboard">
+    <div>
+      <el-row :gutter="16">
+        <el-col :span="4" v-for="c in cards" :key="c.label">
+          <el-card shadow="hover" class="stat-card">
+            <div class="stat-value" :style="{color:c.color}">{{ c.value }}</div>
+            <div class="stat-label">{{ c.label }}</div>
+            <div class="stat-sub" v-if="c.sub">{{ c.sub }}</div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16" style="margin-top:16px">
+        <el-col :span="14">
+          <el-card shadow="hover">
+            <template #header>近 14 天执行趋势</template>
+            <div id="trendChart" style="height:300px"></div>
+          </el-card>
+        </el-col>
+        <el-col :span="10">
+          <el-card shadow="hover">
+            <template #header>Bug 类型分布</template>
+            <div id="bugChart" style="height:300px"></div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-card shadow="hover" style="margin-top:16px">
+        <template #header>最近执行</template>
+        <el-table :data="recent" size="small" stripe>
+          <el-table-column prop="id" label="Run#" width="70" />
+          <el-table-column prop="task_name" label="任务" />
+          <el-table-column label="状态" width="100">
+            <template #default="{row}"><el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="trigger_user" label="触发人" width="100" />
+          <el-table-column label="耗时" width="100">
+            <template #default="{row}">{{ (row.duration_ms/1000).toFixed(1) }}s</template>
+          </el-table-column>
+          <el-table-column label="AI 分析" width="100">
+            <template #default="{row}">
+              <el-tag v-if="row.has_analysis" type="success" size="small">已分析</el-tag>
+              <el-tag v-else type="info" size="small">无</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="160">
+            <template #default="{row}">{{ fmt(row.started_at) }}</template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-tasks">
+    <div>
+      <el-card shadow="hover">
+        <template #header>
+          <div class="card-head">
+            <span>任务管理</span>
+            <el-button type="primary" size="small" @click="openCreate">+ 新建任务</el-button>
+          </div>
+        </template>
+        <el-table :data="tasks" stripe>
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="name" label="任务名称" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="repo_url" label="GitHub 仓库" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="branch" label="分支" width="90" />
+          <el-table-column prop="command" label="执行命令" min-width="160" show-overflow-tooltip />
+          <el-table-column label="超时" width="80">
+            <template #default="{row}">{{ row.timeout }}s</template>
+          </el-table-column>
+          <el-table-column label="调度" width="90">
+            <template #default="{row}">
+              <el-tag v-if="row.schedule_interval_min" type="warning" size="small">每{{ row.schedule_interval_min }}分钟</el-tag>
+              <span v-else class="muted">手动</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="80">
+            <template #default="{row}">
+              <el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled?'已启用':'已停用' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="260" fixed="right">
+            <template #default="{row}">
+              <el-button size="small" type="primary" @click="runTask(row)" :loading="runningId===row.id">执行</el-button>
+              <el-button size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" :type="row.enabled?'warning':'success'" @click="toggleTask(row)">
+                {{ row.enabled?'停用':'启用' }}
+              </el-button>
+              <el-button size="small" type="danger" @click="removeTask(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+
+      <el-dialog v-model="dialogVisible" :title="editing?'编辑任务':'新建任务'" width="640px">
+        <el-form :model="form" label-width="110px">
+          <el-form-item label="任务名称" required><el-input v-model="form.name" /></el-form-item>
+          <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
+          <el-form-item label="GitHub 仓库" required>
+            <el-input v-model="form.repo_url" placeholder="https://github.com/org/repo 或本地 git 仓库路径" />
+          </el-form-item>
+          <el-form-item label="分支"><el-input v-model="form.branch" placeholder="main" /></el-form-item>
+          <el-form-item label="执行命令" required>
+            <el-input v-model="form.command" placeholder="pytest -q" />
+          </el-form-item>
+          <el-form-item label="超时(秒)"><el-input-number v-model="form.timeout" :min="10" :max="86400" /></el-form-item>
+          <el-form-item label="定时调度(分)">
+            <el-input-number v-model="form.schedule_interval_min" :min="0" :max="10080" />
+            <span class="muted" style="margin-left:8px">0 或留空 = 仅手动触发</span>
+          </el-form-item>
+          <el-form-item label="环境变量(JSON)">
+            <el-input v-model="form.env_vars_text" type="textarea" :rows="3" placeholder='{"KEY":"value"}' />
+          </el-form-item>
+          <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="dialogVisible=false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="saveTask">保存</el-button>
+        </template>
+      </el-dialog>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-runs">
+    <div>
+      <el-card shadow="hover">
+        <template #header>
+          <div class="card-head">
+            <span>执行记录</span>
+            <div>
+              <el-select v-model="filterTask" placeholder="全部任务" clearable style="width:200px;margin-right:8px" @change="load">
+                <el-option v-for="t in taskOptions" :key="t.id" :label="t.name" :value="t.id" />
+              </el-select>
+              <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width:140px;margin-right:8px" @change="load">
+                <el-option label="成功" value="success" />
+                <el-option label="失败" value="failed" />
+                <el-option label="超时" value="timeout" />
+                <el-option label="执行中" value="running" />
+                <el-option label="拉取失败" value="error" />
+              </el-select>
+              <el-button type="primary" @click="load">刷新</el-button>
+            </div>
+          </div>
+        </template>
+        <el-table :data="runs" stripe @row-click="openDetail">
+          <el-table-column prop="id" label="Run#" width="80" />
+          <el-table-column prop="task_name" label="任务" min-width="140" show-overflow-tooltip />
+          <el-table-column label="状态" width="110">
+            <template #default="{row}"><el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="trigger_user" label="触发人" width="100" />
+          <el-table-column prop="git_commit" label="Commit" width="100">
+            <template #default="{row}">{{ row.git_commit||'-' }}</template>
+          </el-table-column>
+          <el-table-column label="退出码" width="80">
+            <template #default="{row}">{{ row.exit_code??'-' }}</template>
+          </el-table-column>
+          <el-table-column label="耗时" width="90">
+            <template #default="{row}">{{ (row.duration_ms/1000).toFixed(1) }}s</template>
+          </el-table-column>
+          <el-table-column label="AI 分析" width="110">
+            <template #default="{row}">
+              <el-tag v-if="row.has_analysis" type="success" size="small">已分析</el-tag>
+              <el-tag v-else type="info" size="small">-</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="开始时间" width="160">
+            <template #default="{row}">{{ fmt(row.started_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="80">
+            <template #default><el-link type="primary" @click.stop="openDetail(row)">详情</el-link></template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+
+      <!-- 执行详情抽屉 -->
+      <el-drawer v-model="drawerVisible" size="72%" :title="'执行详情 Run#' + (current?current.id:'')" destroy-on-close>
+        <div v-if="current" class="run-detail">
+          <el-descriptions :column="4" border size="small">
+            <el-descriptions-item label="任务">{{ current.task_name }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag :type="statusType(current.status)" size="small">{{ statusText(current.status) }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="退出码">{{ current.exit_code??'-' }}</el-descriptions-item>
+            <el-descriptions-item label="耗时">{{ (current.duration_ms/1000).toFixed(1) }}s</el-descriptions-item>
+            <el-descriptions-item label="触发人">{{ current.trigger_user }}</el-descriptions-item>
+            <el-descriptions-item label="Commit">{{ current.git_commit||'-' }}</el-descriptions-item>
+            <el-descriptions-item label="命令" :span="2">{{ current.command }}</el-descriptions-item>
+          </el-descriptions>
+
+          <div class="section-title">执行日志<span class="muted" style="margin-left:8px;font-size:12px">(自动刷新，失败后自动触发 AI 分析)</span></div>
+          <div class="log-box" ref="logBox">
+            <pre>{{ logs }}</pre>
+            <div v-if="logLoading" class="muted">日志加载中...</div>
+          </div>
+
+          <div class="section-title">AI Bug 分析</div>
+          <el-alert v-if="analysis && analysis.status==='analyzing'" type="info" :closable="false" title="AI 正在分析日志..." />
+          <el-alert v-else-if="!analysis || analysis.status==='failed'" type="warning" :closable="false"
+            :title="analysis&&analysis.status==='failed'?('分析失败: '+(analysis.raw_output||'')):'任务成功或无失败日志，暂无分析'" />
+          <el-card v-else shadow="never" class="analysis-card">
+            <div class="analysis-head">
+              <el-tag :type="analysis.source==='ai'?'primary':'warning'" size="small">
+                {{ analysis.source==='ai'?'AI 大模型分析':'内置规则引擎' }}
+              </el-tag>
+              <el-tag :type="sevType(analysis.severity)" size="small">{{ sevText(analysis.severity) }}</el-tag>
+              <span class="analysis-bug">{{ analysis.bug_type }}</span>
+              <span class="muted">置信度 {{ (analysis.confidence*100).toFixed(0) }}%</span>
+              <el-tag v-if="analysis.reviewed" :type="analysis.review_result==='correct'?'success':'danger'" size="small">
+                已审核:{{ analysis.review_result==='correct'?'正确':'已纠正' }}
+              </el-tag>
+            </div>
+            <div class="analysis-item"><b>根因分析：</b>{{ analysis.root_cause }}</div>
+            <div class="analysis-item"><b>修复建议：</b>{{ analysis.suggestion }}</div>
+            <div v-if="analysis.review_result==='incorrect'" class="analysis-item corrected">
+              <b>人工纠正结论：</b> {{ analysis.corrected_bug_type || analysis.bug_type }} —— {{ analysis.corrected_root_cause || analysis.root_cause }}
+            </div>
+            <el-divider v-if="!analysis.reviewed" />
+            <!-- 人工审核表单 -->
+            <div v-if="!analysis.reviewed" class="review-form">
+              <div class="section-title" style="margin-top:0">人工审核（纠正后自动沉淀为样本，提升下次 AI 准确性）</div>
+              <el-radio-group v-model="review.result">
+                <el-radio value="correct">分析正确</el-radio>
+                <el-radio value="incorrect">分析错误，我来纠正</el-radio>
+              </el-radio-group>
+              <el-form label-width="90px" style="margin-top:10px" v-if="review.result==='incorrect'">
+                <el-form-item label="Bug 类型"><el-input v-model="review.bug_type" placeholder="如 依赖缺失 / 环境配置错误" /></el-form-item>
+                <el-form-item label="根因分析"><el-input v-model="review.root_cause" type="textarea" :rows="2" /></el-form-item>
+                <el-form-item label="修复建议"><el-input v-model="review.suggestion" type="textarea" :rows="2" /></el-form-item>
+              </el-form>
+              <el-button type="primary" size="small" :loading="reviewing" @click="submitReview">提交审核</el-button>
+            </div>
+          </el-card>
+        </div>
+      </el-drawer>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-feedback">
+    <div>
+      <el-row :gutter="16">
+        <el-col :span="4" v-for="c in cards" :key="c.label">
+          <el-card shadow="hover" class="stat-card">
+            <div class="stat-value" :style="{color:c.color}">{{ c.value }}</div>
+            <div class="stat-label">{{ c.label }}</div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-card shadow="hover" style="margin-top:16px">
+        <template #header>
+          <div class="card-head"><span>AI 分析结果审核（人工数据闭环）</span></div>
+        </template>
+        <el-tabs v-model="tab">
+          <el-tab-pane label="待审核" name="pending">
+            <el-empty v-if="!pendingList.length" description="暂无待审核分析" />
+            <el-card v-for="a in pendingList" :key="a.id" shadow="never" class="analysis-card">
+              <div class="analysis-head">
+                <el-tag type="info" size="small">Run#{{ a.run_id }}</el-tag>
+                <el-tag :type="a.source==='ai'?'primary':'warning'" size="small">{{ a.source==='ai'?'AI':'规则' }}</el-tag>
+                <el-tag :type="sevType(a.severity)" size="small">{{ sevText(a.severity) }}</el-tag>
+                <span class="analysis-bug">{{ a.bug_type }}</span>
+                <span class="muted">置信度 {{ (a.confidence*100).toFixed(0) }}%</span>
+              </div>
+              <div class="analysis-item"><b>根因：</b>{{ a.root_cause }}</div>
+              <div class="analysis-item"><b>建议：</b>{{ a.suggestion }}</div>
+              <el-button type="primary" size="small" style="margin-top:8px" @click="openReview(a)">审核</el-button>
+            </el-card>
+          </el-tab-pane>
+
+          <el-tab-pane label="已审核" name="reviewed">
+            <el-table :data="reviewedList" stripe size="small">
+              <el-table-column prop="id" label="ID" width="60" />
+              <el-table-column prop="run_id" label="Run#" width="80" />
+              <el-table-column label="结果" width="90">
+                <template #default="{row}">
+                  <el-tag :type="row.review_result==='correct'?'success':'danger'" size="small">
+                    {{ row.review_result==='correct'?'正确':'已纠正' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="bug_type" label="Bug 类型" width="160" />
+              <el-table-column prop="root_cause" label="根因" min-width="220" show-overflow-tooltip />
+              <el-table-column prop="reviewed_by" label="审核人" width="100" />
+              <el-table-column label="审核时间" width="160">
+                <template #default="{row}">{{ fmt(row.reviewed_at) }}</template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane label="样本库（沉淀的知识）" name="samples">
+            <el-table :data="samples" stripe size="small">
+              <el-table-column prop="id" label="ID" width="60" />
+              <el-table-column prop="task_name" label="任务" width="140" />
+              <el-table-column prop="bug_type" label="Bug 类型" width="160" />
+              <el-table-column prop="root_cause" label="根因" min-width="200" show-overflow-tooltip />
+              <el-table-column prop="use_count" label="被引用" width="90" />
+              <el-table-column label="创建人" width="100">
+                <template #default="{row}">{{ row.created_by||'-' }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="90">
+                <template #default="{row}">
+                  <el-button size="small" type="danger" @click="delSample(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
+      </el-card>
+
+      <el-dialog v-model="reviewVisible" title="审核 AI 分析" width="600px" destroy-on-close>
+        <div v-if="reviewTarget">
+          <el-descriptions :column="1" border size="small">
+            <el-descriptions-item label="AI 结论">{{ reviewTarget.bug_type }}</el-descriptions-item>
+            <el-descriptions-item label="根因">{{ reviewTarget.root_cause }}</el-descriptions-item>
+            <el-descriptions-item label="建议">{{ reviewTarget.suggestion }}</el-descriptions-item>
+          </el-descriptions>
+          <el-divider />
+          <el-radio-group v-model="reviewForm.result">
+            <el-radio value="correct">分析正确</el-radio>
+            <el-radio value="incorrect">分析错误，纠正</el-radio>
+          </el-radio-group>
+          <el-form v-if="reviewForm.result==='incorrect'" label-width="90px" style="margin-top:12px">
+            <el-form-item label="Bug 类型"><el-input v-model="reviewForm.bug_type" /></el-form-item>
+            <el-form-item label="根因分析"><el-input v-model="reviewForm.root_cause" type="textarea" :rows="2" /></el-form-item>
+            <el-form-item label="修复建议"><el-input v-model="reviewForm.suggestion" type="textarea" :rows="2" /></el-form-item>
+          </el-form>
+        </div>
+        <template #footer>
+          <el-button @click="reviewVisible=false">取消</el-button>
+          <el-button type="primary" :loading="reviewing" @click="submitReview">提交</el-button>
+        </template>
+      </el-dialog>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-users">
+    <el-card shadow="hover">
+      <template #header>
+        <div class="card-head">
+          <span>用户管理</span>
+          <el-button type="primary" size="small" @click="createVisible=true">+ 新增用户</el-button>
+        </div>
+      </template>
+      <el-table :data="users" stripe>
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="username" label="用户名" />
+        <el-table-column label="角色" width="140">
+          <template #default="{row}">
+            <el-tag :type="row.role==='admin'?'danger':'info'" size="small">{{ row.role }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="180">
+          <template #default="{row}">{{ fmt(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="100">
+          <template #default="{row}">
+            <el-button size="small" type="danger" :disabled="row.username===user.username" @click="delUser(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-dialog v-model="createVisible" title="新增用户" width="420px">
+        <el-form :model="createForm" label-width="80px">
+          <el-form-item label="用户名"><el-input v-model="createForm.username" /></el-form-item>
+          <el-form-item label="密码"><el-input v-model="createForm.password" type="password" show-password /></el-form-item>
+          <el-form-item label="角色">
+            <el-select v-model="createForm.role">
+              <el-option label="普通用户" value="user" />
+              <el-option label="管理员" value="admin" />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="createVisible=false">取消</el-button>
+          <el-button type="primary" @click="createUser">创建</el-button>
+        </template>
+      </el-dialog>
+    </el-card>
+  </script>
+
+  <script type="text/x-template" id="tpl-settings">
+    <el-card shadow="hover" style="max-width:760px">
+      <template #header>系统设置</template>
+      <el-alert type="info" :closable="false" style="margin-bottom:16px"
+        title="配置保存后立即生效（覆盖 .env 默认值）。AI 未配置 API Key 时自动使用内置规则引擎。" />
+      <el-form :model="form" label-width="180px">
+        <el-divider content-position="left">AI 大模型（OpenAI 兼容接口）</el-divider>
+        <el-form-item label="Base URL">
+          <el-input v-model="form.llm_base_url" placeholder="https://api.openai.com/v1" />
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="form.llm_api_key" type="password" show-password
+            :placeholder="form.llm_api_key_configured?'已配置（输入新值可覆盖）':'未配置，将使用规则引擎'" />
+        </el-form-item>
+        <el-form-item label="模型">
+          <el-input v-model="form.llm_model" placeholder="gpt-4o-mini" />
+        </el-form-item>
+        <el-form-item label="分析日志长度上限">
+          <el-input-number v-model="form.llm_max_log_chars" :min="1000" :max="50000" :step="1000" />
+        </el-form-item>
+        <el-divider content-position="left">GitHub 与执行</el-divider>
+        <el-form-item label="GitHub Token">
+          <el-input v-model="form.github_token" type="password" show-password
+            :placeholder="form.github_token_configured?'已配置（输入新值可覆盖）':'私有仓库拉取需要'" />
+        </el-form-item>
+        <el-form-item label="最大并发执行数">
+          <el-input-number v-model="form.max_concurrent_runs" :min="1" :max="20" />
+        </el-form-item>
+        <el-form-item label="默认超时(秒)">
+          <el-input-number v-model="form.default_timeout" :min="30" :max="86400" />
+        </el-form-item>
+        <el-divider content-position="left">通知中心（失败自动通知）</el-divider>
+        <el-form-item label="飞书群 Webhook">
+          <el-input v-model="form.feishu_webhook" type="password" show-password
+            :placeholder="form.feishu_webhook_configured?'已配置（输入新值可覆盖）':'未配置时自动 mock 模拟发送'" />
+        </el-form-item>
+        <el-form-item label="钉钉 Webhook">
+          <el-input v-model="form.dingtalk_webhook" type="password" show-password placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="企微 Webhook">
+          <el-input v-model="form.wecom_webhook" type="password" show-password placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="SMTP 服务器">
+          <el-input v-model="form.smtp_host" placeholder="如 smtp.qq.com（可选）" />
+        </el-form-item>
+        <el-form-item label="SMTP 账号">
+          <el-input v-model="form.smtp_user" placeholder="邮箱地址" />
+        </el-form-item>
+        <el-form-item label="SMTP 密码/授权码">
+          <el-input v-model="form.smtp_password" type="password" show-password placeholder="授权码" />
+        </el-form-item>
+        <el-form-item label="收件人">
+          <el-input v-model="form.smtp_to" placeholder="逗号分隔多个邮箱" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+  </script>
+
+  <script type="text/x-template" id="tpl-agents">
+    <div>
+      <el-alert type="info" :closable="false" style="margin-bottom:16px"
+        title="Agent 执行机集群（Master-Slave）：本机启动多个 Worker 模拟多节点，心跳注册 + 最少负载抢占分配任务。节点离线会触发通知中心告警。" />
+      <el-row :gutter="16">
+        <el-col :span="6" v-for="c in cards" :key="c.label">
+          <el-card shadow="hover" class="stat-card">
+            <div class="stat-value" :style="{color:c.color}">{{ c.value }}</div>
+            <div class="stat-label">{{ c.label }}</div>
+            <div class="stat-sub" v-if="c.sub">{{ c.sub }}</div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-card shadow="hover" style="margin-top:16px">
+        <template #header>
+          <div class="card-head">
+            <span>执行节点</span>
+            <el-button size="small" type="primary" @click="register">+ 注册节点</el-button>
+          </div>
+        </template>
+        <el-table :data="agents" stripe>
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="name" label="节点名称" min-width="120" />
+          <el-table-column prop="host" label="主机" min-width="140" show-overflow-tooltip />
+          <el-table-column label="状态" width="90">
+            <template #default="{row}">
+              <el-tag :type="row.status==='online'?'success':'danger'" size="small">
+                {{ row.status==='online'?'在线':'离线' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="容量" width="80">
+            <template #default="{row}">{{ row.capacity }}</template>
+          </el-table-column>
+          <el-table-column label="执行中" width="90">
+            <template #default="{row}">
+              <el-tag :type="row.running_count>0?'warning':'info'" size="small">{{ row.running_count }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="负载" width="160">
+            <template #default="{row}">
+              <el-progress :percentage="Math.min(100, Math.round(row.running_count/row.capacity*100))" :stroke-width="10" />
+            </template>
+          </el-table-column>
+          <el-table-column label="最近心跳" width="160">
+            <template #default="{row}">{{ fmt(row.last_heartbeat) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="140">
+            <template #default="{row}">
+              <el-button v-if="row.status==='online'" size="small" type="warning" @click="setStatus(row,'offline')">下线</el-button>
+              <el-button v-else size="small" type="success" @click="setStatus(row,'online')">上线</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-resources">
+    <div>
+      <el-card shadow="hover">
+        <el-tabs v-model="tab">
+          <!-- 真机池 -->
+          <el-tab-pane label="真机池（Mock 设备）" name="devices">
+            <div class="card-head" style="margin-bottom:12px">
+              <span>设备登记 / 状态 / 占用（预留 adb 序列号，可对接真实真机池）</span>
+              <el-button type="primary" size="small" @click="openDevCreate">+ 登记设备</el-button>
+            </div>
+            <el-table :data="devices" stripe>
+              <el-table-column prop="id" label="ID" width="60" />
+              <el-table-column prop="name" label="设备名" min-width="120" />
+              <el-table-column prop="model" label="型号" min-width="120" />
+              <el-table-column prop="platform" label="平台" width="90" />
+              <el-table-column prop="os_version" label="系统版本" width="100" />
+              <el-table-column label="状态" width="110">
+                <template #default="{row}">
+                  <el-tag :type="row.status==='available'?'success':(row.status==='in_use'?'warning':'danger')" size="small">
+                    {{ row.status==='available'?'空闲':(row.status==='in_use'?'占用中':'离线') }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="占用 Run" width="90">
+                <template #default="{row}">{{ row.owner_run_id||'-' }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="230">
+                <template #default="{row}">
+                  <el-button v-if="row.status==='available'" size="small" type="warning" @click="claim(row)">占用</el-button>
+                  <el-button v-if="row.status==='in_use'" size="small" type="success" @click="release(row)">释放</el-button>
+                  <el-button size="small" @click="openDevEdit(row)">编辑</el-button>
+                  <el-button size="small" type="danger" @click="removeDev(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <!-- 测试环境 -->
+          <el-tab-pane label="测试环境" name="envs">
+            <div class="card-head" style="margin-bottom:12px">
+              <span>测试服 / 预发 / 生产环境管理</span>
+              <el-button type="primary" size="small" @click="openEnvCreate">+ 新增环境</el-button>
+            </div>
+            <el-table :data="envs" stripe>
+              <el-table-column prop="id" label="ID" width="60" />
+              <el-table-column prop="name" label="环境名" min-width="130" />
+              <el-table-column prop="env_type" label="类型" width="100">
+                <template #default="{row}">
+                  <el-tag :type="row.env_type==='生产'?'danger':(row.env_type==='预发'?'warning':'info')" size="small">{{ row.env_type }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="base_url" label="地址" min-width="200" show-overflow-tooltip />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+              <el-table-column label="状态" width="90">
+                <template #default="{row}">
+                  <el-tag :type="row.status==='active'?'success':'info'" size="small">{{ row.status==='active'?'启用':'停用' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="160">
+                <template #default="{row}">
+                  <el-button size="small" @click="openEnvEdit(row)">编辑</el-button>
+                  <el-button size="small" type="danger" @click="removeEnv(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
+      </el-card>
+
+      <!-- 设备对话框 -->
+      <el-dialog v-model="devDialog" :title="devEditing?'编辑设备':'登记设备'" width="520px" destroy-on-close>
+        <el-form :model="devForm" label-width="90px">
+          <el-form-item label="设备名" required><el-input v-model="devForm.name" /></el-form-item>
+          <el-form-item label="型号"><el-input v-model="devForm.model" placeholder="如 小米14 / iPhone 15" /></el-form-item>
+          <el-form-item label="平台">
+            <el-select v-model="devForm.platform" style="width:100%">
+              <el-option label="Android" value="Android" />
+              <el-option label="iOS" value="iOS" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="系统版本"><el-input v-model="devForm.os_version" placeholder="如 Android 15 / iOS 18" /></el-form-item>
+          <el-form-item label="adb 序列号"><el-input v-model="devForm.adb_serial" placeholder="预留：真实设备 adb devices 序列号" /></el-form-item>
+          <el-form-item label="备注"><el-input v-model="devForm.remark" type="textarea" :rows="2" /></el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="devDialog=false">取消</el-button>
+          <el-button type="primary" :loading="devSaving" @click="saveDev">保存</el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 环境对话框 -->
+      <el-dialog v-model="envDialog" :title="envEditing?'编辑环境':'新增环境'" width="520px" destroy-on-close>
+        <el-form :model="envForm" label-width="90px">
+          <el-form-item label="环境名" required><el-input v-model="envForm.name" /></el-form-item>
+          <el-form-item label="类型">
+            <el-select v-model="envForm.env_type" style="width:100%">
+              <el-option label="测试服" value="测试服" />
+              <el-option label="预发" value="预发" />
+              <el-option label="生产" value="生产" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="地址"><el-input v-model="envForm.base_url" placeholder="https://test-api.example.com" /></el-form-item>
+          <el-form-item label="备注"><el-input v-model="envForm.remark" type="textarea" :rows="2" /></el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="envDialog=false">取消</el-button>
+          <el-button type="primary" :loading="envSaving" @click="saveEnv">保存</el-button>
+        </template>
+      </el-dialog>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-cases">
+    <div>
+      <el-alert type="info" :closable="false" style="margin-bottom:16px"
+        title="用例库：沉淀可复用用例，一键执行会自动生成任务并走完整流水线（拉取代码→执行→AI 分析→结果回写）。" />
+      <el-card shadow="hover">
+        <template #header>
+          <div class="card-head">
+            <span>用例库</span>
+            <div>
+              <el-select v-model="filterModule" placeholder="全部模块" clearable style="width:160px;margin-right:8px" @change="load">
+                <el-option v-for="m in modules" :key="m" :label="m" :value="m" />
+              </el-select>
+              <el-select v-model="filterPriority" placeholder="全部优先级" clearable style="width:130px;margin-right:8px" @change="load">
+                <el-option label="P0" value="P0" /><el-option label="P1" value="P1" />
+                <el-option label="P2" value="P2" /><el-option label="P3" value="P3" />
+              </el-select>
+              <el-button type="primary" size="small" @click="openCreate">+ 新建用例</el-button>
+            </div>
+          </div>
+        </template>
+        <el-table :data="cases" stripe>
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="name" label="用例名称" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="module" label="模块" width="110" />
+          <el-table-column label="优先级" width="80">
+            <template #default="{row}">
+              <el-tag :type="row.priority==='P0'?'danger':(row.priority==='P1'?'warning':'info')" size="small">{{ row.priority }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="command" label="执行命令" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="tags" label="标签" min-width="110" show-overflow-tooltip />
+          <el-table-column label="最近结果" width="100">
+            <template #default="{row}">
+              <el-tag v-if="row.last_result==='success'" type="success" size="small">通过</el-tag>
+              <el-tag v-else-if="row.last_result==='failed'" type="danger" size="small">失败</el-tag>
+              <el-tag v-else type="info" size="small">未执行</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="240" fixed="right">
+            <template #default="{row}">
+              <el-button size="small" type="primary" @click="runCase(row)" :loading="runningId===row.id">一键执行</el-button>
+              <el-button size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" :type="row.enabled?'warning':'success'" @click="toggle(row)">
+                {{ row.enabled?'停用':'启用' }}
+              </el-button>
+              <el-button size="small" type="danger" @click="removeCase(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+
+      <el-dialog v-model="dialogVisible" :title="editing?'编辑用例':'新建用例'" width="600px" destroy-on-close>
+        <el-form :model="form" label-width="100px">
+          <el-form-item label="用例名称" required><el-input v-model="form.name" /></el-form-item>
+          <el-form-item label="模块"><el-input v-model="form.module" placeholder="如 登录 / 支付 / 蓝牙连接" /></el-form-item>
+          <el-form-item label="优先级">
+            <el-select v-model="form.priority" style="width:100%">
+              <el-option label="P0（核心）" value="P0" />
+              <el-option label="P1（重要）" value="P1" />
+              <el-option label="P2（一般）" value="P2" />
+              <el-option label="P3（低优）" value="P3" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="执行命令" required>
+            <el-input v-model="form.command" placeholder="pytest -q" />
+          </el-form-item>
+          <el-form-item label="仓库地址">
+            <el-input v-model="form.repo_url" placeholder="留空=使用平台默认演示仓库(local://demo-repo)" />
+          </el-form-item>
+          <el-form-item label="分支"><el-input v-model="form.branch" placeholder="main" /></el-form-item>
+          <el-form-item label="标签"><el-input v-model="form.tags" placeholder="逗号分隔，如 回归,冒烟" /></el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="dialogVisible=false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="saveCase">保存</el-button>
+        </template>
+      </el-dialog>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-reports">
+    <div>
+      <el-row :gutter="16">
+        <el-col :span="4" v-for="c in cards" :key="c.label">
+          <el-card shadow="hover" class="stat-card">
+            <div class="stat-value" :style="{color:c.color}">{{ c.value }}</div>
+            <div class="stat-label">{{ c.label }}</div>
+            <div class="stat-sub" v-if="c.sub">{{ c.sub }}</div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16" style="margin-top:16px">
+        <el-col :span="10">
+          <el-card shadow="hover">
+            <template #header>近 {{ days }} 天执行趋势</template>
+            <div id="reportTrend" style="height:280px"></div>
+          </el-card>
+        </el-col>
+        <el-col :span="7">
+          <el-card shadow="hover">
+            <template #header>失败 Top 任务</template>
+            <div id="reportFailTop" style="height:280px"></div>
+          </el-card>
+        </el-col>
+        <el-col :span="7">
+          <el-card shadow="hover">
+            <template #header>用例模块分布</template>
+            <div id="reportModule" style="height:280px"></div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-card shadow="hover" style="margin-top:16px">
+        <template #header>最近报告</template>
+        <el-table :data="recent" size="small" stripe @row-click="openRun">
+          <el-table-column prop="id" label="Run#" width="80" />
+          <el-table-column prop="task_name" label="任务" min-width="160" show-overflow-tooltip />
+          <el-table-column label="状态" width="100">
+            <template #default="{row}"><el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="agent_name" label="执行节点" width="110" />
+          <el-table-column label="耗时" width="100">
+            <template #default="{row}">{{ (row.duration_ms/1000).toFixed(1) }}s</template>
+          </el-table-column>
+          <el-table-column prop="trigger_user" label="触发人" width="100" />
+          <el-table-column label="时间" width="160">
+            <template #default="{row}">{{ fmt(row.started_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="80">
+            <template #default="{row}"><el-link type="primary" @click.stop="openRun(row)">查看</el-link></template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </div>
+  </script>
+
+  <script type="text/x-template" id="tpl-notifications">
+    <div>
+      <el-row :gutter="16">
+        <el-col :span="6" v-for="c in cards" :key="c.label">
+          <el-card shadow="hover" class="stat-card">
+            <div class="stat-value" :style="{color:c.color}">{{ c.value }}</div>
+            <div class="stat-label">{{ c.label }}</div>
+          </el-card>
+        </el-col>
+      </el-row>
+      <el-card shadow="hover" style="margin-top:16px">
+        <template #header>
+          <div class="card-head">
+            <span>通知记录（失败自动通知：飞书 Webhook 未配置时自动 mock）</span>
+            <div>
+              <el-select v-model="filterType" placeholder="全部类型" clearable style="width:150px;margin-right:8px" @change="load">
+                <el-option label="任务失败" value="task_failed" />
+                <el-option label="节点离线" value="agent_offline" />
+                <el-option label="系统" value="system" />
+              </el-select>
+              <el-button size="small" @click="markAll">全部已读</el-button>
+              <el-button size="small" type="primary" @click="load">刷新</el-button>
+            </div>
+          </div>
+        </template>
+        <el-table :data="list" stripe>
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column label="类型" width="100">
+            <template #default="{row}">
+              <el-tag :type="row.ntype==='task_failed'?'danger':(row.ntype==='agent_offline'?'warning':'info')" size="small">
+                {{ row.ntype==='task_failed'?'任务失败':(row.ntype==='agent_offline'?'节点离线':'系统') }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="content" label="内容" min-width="260" show-overflow-tooltip />
+          <el-table-column label="渠道" width="90">
+            <template #default="{row}">
+              <el-tag :type="row.channel==='mock'?'info':(row.status==='success'?'success':'danger')" size="small">
+                {{ row.channel }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="{row}">
+              <el-tag :type="row.status==='success'?'success':(row.status==='mock'?'warning':'danger')" size="small">
+                {{ row.status==='success'?'已送达':(row.status==='mock'?'模拟':row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="已读" width="70">
+            <template #default="{row}">
+              <el-tag :type="row.read?'info':'primary'" size="small">{{ row.read?'已读':'未读' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="160">
+            <template #default="{row}">{{ fmt(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="140">
+            <template #default="{row}">
+              <el-button v-if="!row.read" size="small" @click="markOne(row)">已读</el-button>
+              <el-button size="small" type="warning" @click="resend(row)">重发</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </div>
+  </script>
+
+  <script src="/vendor/vue.global.prod.js"></script>
+  <script src="/vendor/element-plus.min.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
+  <script src="/vendor/axios.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/views.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
